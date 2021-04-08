@@ -1,67 +1,202 @@
 package comp0012.main;
-import java.io.File;
-import java.io.FileNotFoundException;
-import java.io.FileOutputStream;
-import java.io.IOException;
-import java.util.Iterator;
 
 import org.apache.bcel.classfile.ClassParser;
 import org.apache.bcel.classfile.Code;
 import org.apache.bcel.classfile.JavaClass;
 import org.apache.bcel.classfile.Method;
-import org.apache.bcel.generic.ClassGen;
-import org.apache.bcel.generic.ConstantPoolGen;
-import org.apache.bcel.generic.InstructionHandle;
-import org.apache.bcel.generic.InstructionList;
-import org.apache.bcel.util.InstructionFinder;
-import org.apache.bcel.generic.MethodGen;
-import org.apache.bcel.generic.TargetLostException;
+import org.apache.bcel.generic.*;
+
+import java.io.File;
+import java.io.FileNotFoundException;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.util.HashMap;
+import java.util.Stack;
 
 
 
-public class ConstantFolder
-{
-	ClassParser parser = null;
-	ClassGen gen = null;
 
+public class ConstantFolder {
+
+	/** @noinspection WeakerAccess*/
+    ClassParser parser = null;
+	/** @noinspection WeakerAccess*/
+    ClassGen gen = null;
+
+    private ClassGen cgen;
+    private ConstantPoolGen cpgen;
+    private Stack<Number> stack;
+    private HashMap<Integer, Number> variables;
+
+
+    /** @noinspection WeakerAccess*/
 	JavaClass original = null;
-	JavaClass optimized = null;
+	/** @noinspection WeakerAccess*/
+    JavaClass optimized = null;
 
-	public ConstantFolder(String classFilePath)
-	{
-		try{
-			this.parser = new ClassParser(classFilePath);
-			this.original = this.parser.parse();
-			this.gen = new ClassGen(this.original);
-		} catch(IOException e){
-			e.printStackTrace();
+    public ConstantFolder(String classFilePath) {
+        try {
+            this.parser = new ClassParser(classFilePath);
+            this.original = this.parser.parse();
+            this.gen = new ClassGen(this.original);
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+    }
+
+    public void optimize() {
+    	cgen = new ClassGen(original);
+        cpgen = cgen.getConstantPool();
+
+		stack = new Stack<Number>();
+		variables = new HashMap<Integer, Number>();
+
+        // Implement your optimization here
+		Method[] methods = cgen.getMethods(); // gets all the methods.
+		for (Method method: methods){
+			optimizeMethod(method); // optimizes each method
+			stack.clear();
+			variables.clear();
+		}
+
+        this.optimized = gen.getJavaClass();
+    }
+
+	private void optimizeMethod(Method method) {
+		Code methodCode = method.getCode(); // gets the code inside the method.
+		InstructionList instructionList = new InstructionList(methodCode.getCode()); // gets code and makes an list of Instructions.
+
+		System.out.println("OPTIMIZING: " + method.getName());
+
+		for (InstructionHandle handle: instructionList.getInstructionHandles()){
+			Instruction nextInstruction = handle.getInstruction();
+			System.out.println(nextInstruction);
+
+			if (nextInstruction instanceof ArithmeticInstruction) handleArithmetic(handle, nextInstruction, instructionList);
+			if (nextInstruction instanceof LoadInstruction) handleLoad(handle, nextInstruction, instructionList);
+
 		}
 	}
-	
-	public void optimize()
-	{
-		ClassGen cgen = new ClassGen(original);
-		ConstantPoolGen cpgen = cgen.getConstantPool();
 
-		// Implement your optimization here
-        
-		this.optimized = gen.getJavaClass();
-	}
-
-	
-	public void write(String optimisedFilePath)
-	{
-		this.optimize();
-
+	private void handleLoad(InstructionHandle handle, Instruction nextInstruction, InstructionList instructionList) {
+		stack.push(getInstructionConstant(nextInstruction));
 		try {
-			FileOutputStream out = new FileOutputStream(new File(optimisedFilePath));
-			this.optimized.dump(out);
-		} catch (FileNotFoundException e) {
-			// Auto-generated catch block
-			e.printStackTrace();
-		} catch (IOException e) {
-			// Auto-generated catch block
+			instructionList.delete(handle);
+		} catch (TargetLostException e) {
 			e.printStackTrace();
 		}
 	}
+
+	private Number getInstructionConstant(Instruction nextInstruction) {
+		if (nextInstruction instanceof LDC) {
+			return (Number) ((LDC) nextInstruction).getValue(cpgen);
+
+		} else if (nextInstruction instanceof LDC2_W) {
+			return ((LDC2_W) nextInstruction).getValue(cpgen);
+
+		} else if (nextInstruction instanceof BIPUSH) {
+			return ((BIPUSH) nextInstruction).getValue();
+
+		} else if (nextInstruction instanceof SIPUSH) {
+			return ((SIPUSH) nextInstruction).getValue();
+		}
+		return null;
+	}
+
+	private void handleArithmetic(InstructionHandle handle, Instruction nextInstruction, InstructionList instructionList) {
+		performArithmeticOperation(nextInstruction, stack);
+
+		Number topOfStack = stack.pop();
+
+		if (topOfStack instanceof Double) {
+			instructionList.insert(handle, new LDC2_W(cpgen.addDouble((Double) topOfStack)));
+		} else if (topOfStack instanceof Long) {
+			instructionList.insert(handle, new LDC2_W(cpgen.addLong((Long) topOfStack)));
+		} else if (topOfStack instanceof Integer) {
+			instructionList.insert(handle, new LDC(cpgen.addInteger((Integer) topOfStack)));
+		} else if (topOfStack instanceof Float) {
+			instructionList.insert(handle, new LDC(cpgen.addFloat((Float) topOfStack)));
+		}
+
+		stack.push(topOfStack);
+		try {
+			instructionList.delete(handle);
+		} catch (TargetLostException e) {
+			e.printStackTrace();
+		}
+	}
+
+	private void performArithmeticOperation(Instruction nextInstruction, Stack<Number> stack) {
+		System.out.println("CONTENTS ON THE STACK: ");
+		System.out.println(stack);
+		Number first = stack.pop();
+		Number second = stack.pop();
+
+		System.out.println("PERFORMING ARITHMETIC OPERATION");
+		Number combinedValue = null;
+
+		// <------ Integer Operations ------>
+		if (nextInstruction instanceof IADD){
+			combinedValue = first.intValue() + second.intValue();
+		} else if (nextInstruction instanceof ISUB){
+			combinedValue = first.intValue() - second.intValue();
+		} else if (nextInstruction instanceof IMUL){
+			combinedValue = first.intValue() * second.intValue();
+		} else if (nextInstruction instanceof IDIV){
+			combinedValue = first.intValue() / second.intValue();
+		}
+
+		// <------ Double Operations ------>
+		else if (nextInstruction instanceof DADD){
+			combinedValue = first.doubleValue() + second.doubleValue();
+		} else if (nextInstruction instanceof DSUB){
+			combinedValue = first.doubleValue() - second.doubleValue();
+		} else if (nextInstruction instanceof DMUL){
+			combinedValue = first.doubleValue() * second.doubleValue();
+		} else if (nextInstruction instanceof DDIV){
+			combinedValue = first.doubleValue() / second.doubleValue();
+		}
+
+		// <------ Float Operations ------>
+		else if (nextInstruction instanceof FADD){
+			combinedValue = first.floatValue() + second.floatValue();
+		} else if (nextInstruction instanceof FSUB){
+			combinedValue = first.floatValue() - second.floatValue();
+		} else if (nextInstruction instanceof FMUL){
+			combinedValue = first.floatValue() * second.floatValue();
+		} else if (nextInstruction instanceof FDIV){
+			combinedValue = first.floatValue() / second.floatValue();
+		}
+
+		// <------ Long Operations ------>
+		else if (nextInstruction instanceof LADD){
+			combinedValue = first.longValue() + second.longValue();
+		} else if (nextInstruction instanceof LSUB){
+			combinedValue = first.longValue() - second.longValue();
+		} else if (nextInstruction instanceof LMUL){
+			combinedValue = first.longValue() * second.longValue();
+		} else if (nextInstruction instanceof LDIV){
+			combinedValue = first.longValue() / second.longValue();
+		}
+
+		// if null then arithmetic operation NOT RECOGNISED.
+		if (combinedValue != null) stack.push(combinedValue);
+
+	}
+
+
+	public void write(String optimisedFilePath) {
+        this.optimize();
+
+        try {
+            FileOutputStream out = new FileOutputStream(new File(optimisedFilePath));
+            this.optimized.dump(out);
+        } catch (FileNotFoundException e) {
+            // Auto-generated catch block
+            e.printStackTrace();
+        } catch (IOException e) {
+            // Auto-generated catch block
+            e.printStackTrace();
+        }
+    }
 }
