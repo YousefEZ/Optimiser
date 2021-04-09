@@ -14,8 +14,6 @@ import java.util.HashMap;
 import java.util.Stack;
 
 
-
-
 public class ConstantFolder {
 
 	/** @noinspection WeakerAccess*/
@@ -74,12 +72,38 @@ public class ConstantFolder {
 
 			if (nextInstruction instanceof ArithmeticInstruction) handleArithmetic(handle, nextInstruction, instructionList);
 			if (nextInstruction instanceof LoadInstruction) handleLoad(handle, nextInstruction, instructionList);
+			if (nextInstruction instanceof StoreInstruction) handleStore(handle, nextInstruction, instructionList);
 
 		}
 	}
 
+	private void handleStore(InstructionHandle handle, Instruction nextInstruction, InstructionList instructionList) {
+		Number value = stack.pop();
+		int index = ((StoreInstruction) nextInstruction).getIndex();
+		variables.put(index, value);
+		try {
+			instructionList.delete(handle);
+		} catch (TargetLostException e) {
+			e.printStackTrace();
+		}
+	}
+
+	private void createLoadInstruction(InstructionHandle handle, InstructionList instructionList, Number value){
+		if (value instanceof Double){
+			instructionList.insert(handle, new LDC2_W(cpgen.addDouble((Double) value))); // pushes double
+		} else if (value instanceof Integer){
+			instructionList.insert(handle, new LDC(cpgen.addInteger((Integer) value))); // pushes integer.
+		} else if (value instanceof Long){
+			instructionList.insert(handle, new LDC2_W(cpgen.addLong((Long) value))); // pushes long
+		} else if (value instanceof Float){
+			instructionList.insert(handle, new LDC(cpgen.addFloat((Float) value))); // pushes float.
+		}
+	}
+
 	private void handleLoad(InstructionHandle handle, Instruction nextInstruction, InstructionList instructionList) {
-		stack.push(getInstructionConstant(nextInstruction));
+		Number nextValue = getInstructionConstant(nextInstruction);
+		createLoadInstruction(handle, instructionList, nextValue);
+
 		try {
 			instructionList.delete(handle);
 		} catch (TargetLostException e) {
@@ -103,22 +127,19 @@ public class ConstantFolder {
 		return null;
 	}
 
+	/** Method that handles an arithmetic operation and loads it in to the instruction list.
+	 *
+	 * @param handle wrapper for the instruction
+	 * @param nextInstruction holds the instruction
+	 * @param instructionList the list of instructions in a method body.
+	 */
 	private void handleArithmetic(InstructionHandle handle, Instruction nextInstruction, InstructionList instructionList) {
-		performArithmeticOperation(nextInstruction, stack);
+		performArithmeticOperation(nextInstruction);
 
-		Number topOfStack = stack.pop();
+		Number nextValue = stack.pop();
+		createLoadInstruction(handle, instructionList, nextValue);
 
-		if (topOfStack instanceof Double) {
-			instructionList.insert(handle, new LDC2_W(cpgen.addDouble((Double) topOfStack)));
-		} else if (topOfStack instanceof Long) {
-			instructionList.insert(handle, new LDC2_W(cpgen.addLong((Long) topOfStack)));
-		} else if (topOfStack instanceof Integer) {
-			instructionList.insert(handle, new LDC(cpgen.addInteger((Integer) topOfStack)));
-		} else if (topOfStack instanceof Float) {
-			instructionList.insert(handle, new LDC(cpgen.addFloat((Float) topOfStack)));
-		}
-
-		stack.push(topOfStack);
+		stack.push(nextValue);
 		try {
 			instructionList.delete(handle);
 		} catch (TargetLostException e) {
@@ -126,13 +147,14 @@ public class ConstantFolder {
 		}
 	}
 
-	private void performArithmeticOperation(Instruction nextInstruction, Stack<Number> stack) {
-		System.out.println("CONTENTS ON THE STACK: ");
-		System.out.println(stack);
+	/**Performs an arithmetic operation using the popping the first 2 values in the stack, and pushing the combined val.
+	 *
+	 * @param nextInstruction the instruction that indicates the type of arithmetic operation.
+	 */
+	private void performArithmeticOperation(Instruction nextInstruction) {
 		Number first = stack.pop();
 		Number second = stack.pop();
 
-		System.out.println("PERFORMING ARITHMETIC OPERATION");
 		Number combinedValue = null;
 
 		// <------ Integer Operations ------>
