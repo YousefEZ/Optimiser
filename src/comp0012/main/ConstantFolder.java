@@ -42,6 +42,15 @@ public class ConstantFolder {
         }
     }
 
+    public void removeHandle(InstructionList instructionList, Instruction instruction){
+		try {
+			System.out.println(instruction);
+			instructionList.delete(instruction);
+		} catch (TargetLostException e) {
+			e.printStackTrace();
+		}
+	}
+
     public void optimize() {
     	cgen = new ClassGen(original);
         cpgen = cgen.getConstantPool();
@@ -71,46 +80,110 @@ public class ConstantFolder {
 			System.out.println(nextInstruction);
 
 			if (nextInstruction instanceof ArithmeticInstruction) handleArithmetic(handle, nextInstruction, instructionList);
-			if (nextInstruction instanceof LoadInstruction) handleLoad(handle, nextInstruction, instructionList);
+			if (nextInstruction instanceof LDC || nextInstruction instanceof LDC2_W ||
+					nextInstruction instanceof SIPUSH || nextInstruction instanceof BIPUSH ||
+					nextInstruction instanceof ICONST || nextInstruction instanceof FCONST ||
+					nextInstruction instanceof DCONST || nextInstruction instanceof LCONST)
+				handleLoad(handle, nextInstruction, instructionList);
+			else if (nextInstruction instanceof LoadInstruction && !(nextInstruction instanceof ALOAD)) handleVariableLoad(handle, nextInstruction, instructionList);
 			if (nextInstruction instanceof StoreInstruction) handleStore(handle, nextInstruction, instructionList);
-
+			if (nextInstruction instanceof IfInstruction) handleComparison(handle, nextInstruction, instructionList);
+			if (nextInstruction instanceof LCMP) handleLongComparison(nextInstruction, instructionList);
 		}
 	}
 
+	// <--------- Handling Instructions --------->
+
+	private void handleLongComparison(Instruction instruction, InstructionList instructionList) {
+		long first = (Long) stack.pop();
+		long second = (Long) stack.pop();
+
+		stack.push(first >= second ? 1 : -1);
+    	removeHandle(instructionList, instruction);
+	}
+
+	private void handleComparison(InstructionHandle handle, Instruction nextInstruction, InstructionList instructionList) {
+		boolean outcome = parseComparisonInstruction(nextInstruction);
+		handle.setInstruction(createLoadInstruction(outcome? 1:0));
+	}
+
+	//
+	private void handleVariableLoad(InstructionHandle handle, Instruction nextInstruction, InstructionList instructionList) {
+		Number variableValue = variables.get(((LoadInstruction) nextInstruction).getIndex());
+		stack.push(variableValue);
+		handle.setInstruction(createLoadInstruction(variableValue));
+	}
+
+	//
 	private void handleStore(InstructionHandle handle, Instruction nextInstruction, InstructionList instructionList) {
+		System.out.println("STORE INSTRUCTION DETECTED");
 		Number value = stack.pop();
+		System.out.println("STORING VALUE: " + value);
 		int index = ((StoreInstruction) nextInstruction).getIndex();
 		variables.put(index, value);
-		try {
-			instructionList.delete(handle);
-		} catch (TargetLostException e) {
-			e.printStackTrace();
-		}
+		//removeHandle(instructionList, handle);
 	}
 
-	private void createLoadInstruction(InstructionHandle handle, InstructionList instructionList, Number value){
-		if (value instanceof Double){
-			instructionList.insert(handle, new LDC2_W(cpgen.addDouble((Double) value))); // pushes double
-		} else if (value instanceof Integer){
-			instructionList.insert(handle, new LDC(cpgen.addInteger((Integer) value))); // pushes integer.
-		} else if (value instanceof Long){
-			instructionList.insert(handle, new LDC2_W(cpgen.addLong((Long) value))); // pushes long
-		} else if (value instanceof Float){
-			instructionList.insert(handle, new LDC(cpgen.addFloat((Float) value))); // pushes float.
-		}
-	}
-
+	//
 	private void handleLoad(InstructionHandle handle, Instruction nextInstruction, InstructionList instructionList) {
+		System.out.println("LOAD INSTRUCTION DETECTED");
 		Number nextValue = getInstructionConstant(nextInstruction);
-		createLoadInstruction(handle, instructionList, nextValue);
-
-		try {
-			instructionList.delete(handle);
-		} catch (TargetLostException e) {
-			e.printStackTrace();
-		}
+		System.out.println("LOADED VALUE: " + nextValue);
+		removeHandle(instructionList, nextInstruction);
+		stack.push(nextValue);
 	}
 
+	// Method that handles an arithmetic operation and loads it in to the instruction list.
+	private void handleArithmetic(InstructionHandle handle, Instruction nextInstruction, InstructionList instructionList) {
+		performArithmeticOperation(nextInstruction);
+		handle.setInstruction(createLoadInstruction(stack.peek()));
+		//removeHandle(instructionList, nextInstruction);
+	}
+
+	// <------------- Helper Methods --------------->
+
+	private boolean parseComparisonInstruction(Instruction instruction){
+    	if (instruction instanceof IFLE) return (Integer) stack.pop() <= 0;
+		else if (instruction instanceof IFLT) return (Integer) stack.pop() < 0;
+		else if (instruction instanceof IFGE) return (Integer) stack.pop() >= 0;
+		else if (instruction instanceof IFGT) return (Integer) stack.pop() > 0;
+		else if (instruction instanceof IFEQ) return (Integer) stack.pop() == 0;
+		else if (instruction instanceof IFNE) return (Integer) stack.pop() != 0;
+
+		int first = (Integer) stack.pop();
+		int second = (Integer) stack.pop();
+
+		if (instruction instanceof IF_ICMPLE) return first <= second;
+		else if (instruction instanceof IF_ICMPLT) return first < second;
+		else if (instruction instanceof IF_ICMPGE) return first >= second;
+		else if (instruction instanceof IF_ICMPGT) return first > second;
+		else if (instruction instanceof IF_ICMPEQ) return first == second;
+		else if (instruction instanceof IF_ICMPNE) return first != second;
+
+		throw new IllegalStateException(String.valueOf(instruction));
+
+	}
+
+
+	//
+	private Instruction createLoadInstruction(Number value){
+		if (value instanceof Double){
+			return new LDC2_W(cpgen.addDouble((Double) value)); // pushes double
+		} else if (value instanceof Integer){
+			return new LDC(cpgen.addInteger((Integer) value)); // pushes integer.
+		} else if (value instanceof Long){
+			return new LDC2_W(cpgen.addLong((Long) value)); // pushes long
+		} else if (value instanceof Float){
+			return new LDC(cpgen.addFloat((Float) value)); // pushes float.
+		}
+		return null;
+	}
+
+	/** Gets the
+	 *
+	 * @param nextInstruction
+	 * @return
+	 */
 	private Number getInstructionConstant(Instruction nextInstruction) {
 		if (nextInstruction instanceof LDC) {
 			return (Number) ((LDC) nextInstruction).getValue(cpgen);
@@ -123,28 +196,22 @@ public class ConstantFolder {
 
 		} else if (nextInstruction instanceof SIPUSH) {
 			return ((SIPUSH) nextInstruction).getValue();
+
+		} else if (nextInstruction instanceof ICONST){
+			return ((ICONST) nextInstruction).getValue();
+
+		} else if (nextInstruction instanceof FCONST){
+			return ((FCONST) nextInstruction).getValue();
+
+		} else if (nextInstruction instanceof DCONST){
+			return ((DCONST) nextInstruction).getValue();
+
+		} else if (nextInstruction instanceof LCONST){
+			return ((LCONST) nextInstruction).getValue();
 		}
+
+
 		return null;
-	}
-
-	/** Method that handles an arithmetic operation and loads it in to the instruction list.
-	 *
-	 * @param handle wrapper for the instruction
-	 * @param nextInstruction holds the instruction
-	 * @param instructionList the list of instructions in a method body.
-	 */
-	private void handleArithmetic(InstructionHandle handle, Instruction nextInstruction, InstructionList instructionList) {
-		performArithmeticOperation(nextInstruction);
-
-		Number nextValue = stack.pop();
-		createLoadInstruction(handle, instructionList, nextValue);
-
-		stack.push(nextValue);
-		try {
-			instructionList.delete(handle);
-		} catch (TargetLostException e) {
-			e.printStackTrace();
-		}
 	}
 
 	/**Performs an arithmetic operation using the popping the first 2 values in the stack, and pushing the combined val.
@@ -152,8 +219,8 @@ public class ConstantFolder {
 	 * @param nextInstruction the instruction that indicates the type of arithmetic operation.
 	 */
 	private void performArithmeticOperation(Instruction nextInstruction) {
-		Number first = stack.pop();
 		Number second = stack.pop();
+		Number first = stack.pop();
 
 		Number combinedValue = null;
 
@@ -201,6 +268,7 @@ public class ConstantFolder {
 			combinedValue = first.longValue() / second.longValue();
 		}
 
+		System.out.println("CALCULATED -> " + combinedValue);
 		// if null then arithmetic operation NOT RECOGNISED.
 		if (combinedValue != null) stack.push(combinedValue);
 
