@@ -10,6 +10,7 @@ import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Stack;
 
@@ -32,6 +33,8 @@ public class ConstantFolder {
     private Stack<InstructionHandle> loadInstructions;
     private HashMap<Integer, Number> variables;
 
+    private boolean deleteElseBranch;
+
     private boolean DEBUG;
 
     public ConstantFolder(String classFilePath) {
@@ -46,7 +49,7 @@ public class ConstantFolder {
         DEBUG = true; // used to display logs about operations on instructions.
     }
 
-    // <-------- Display Methods (Helper) -------->
+    // <--------------------------------------- Display Methods (Helper) -------------------------------------------->
 
     private void displayLog(String log) {
         if (DEBUG) System.out.println(log);
@@ -80,13 +83,17 @@ public class ConstantFolder {
 
         // Implement your optimization here
         Method[] methods = cgen.getMethods(); // gets all the methods.
+        System.out.println(cgen.getMethods());
         for (Method method : methods) {
+            deleteElseBranch = false;
             displayNewMethod(method.getName());
-
             optimizeMethod(method); // optimizes each method.
             stack.clear(); // clears stack for next method.
             variables.clear(); // clears variables for next method.
         }
+        PeepHole.optimise(cgen, cpgen);
+        PeepHole.optimise(cgen, cpgen);
+
         displayNextClass();
         this.optimized = cgen.getJavaClass();
     }
@@ -103,7 +110,6 @@ public class ConstantFolder {
 
     private void optimizeMethod(Method method) {
         Code methodCode = method.getCode(); // gets the code inside the method.
-        //displayLog(methodCode);
         InstructionList instructionList = new InstructionList(methodCode.getCode()); // gets code and makes an list of Instructions.
         MethodGen methodGen = new MethodGen(method.getAccessFlags(), method.getReturnType(), method.getArgumentTypes(),
                 null, method.getName(), cgen.getClassName(), instructionList, cpgen);
@@ -113,6 +119,7 @@ public class ConstantFolder {
         for (InstructionHandle handle : instructionList.getInstructionHandles()) {
             handleInstruction(handle, instructionList);
         }
+        System.out.println(instructionList);
         instructionList.setPositions(true);
         displayLog(instructionList.toString());
         replaceMethodCode(method, methodGen);
@@ -125,19 +132,23 @@ public class ConstantFolder {
      */
     private void handleInstruction(InstructionHandle handle, InstructionList instructionList){
         Instruction instruction = handle.getInstruction(); // gets the instruction from the instruction handle.
-        displayLog(instruction.toString());
+        //displayLog(instruction.toString());
 
         // Load Instructions
         if (isLoadConstantValueInstruction(instruction)) handleLoad(handle);
         else if (instruction instanceof LoadInstruction) handleVariableLoad(handle);
+
+        if (instruction instanceof ConversionInstruction) handleConversion(instructionList, handle);
 
         // Store Instructions
         if (instruction instanceof StoreInstruction) handleStore(handle);
 
         // Comparison Instructions
         if (instruction instanceof ArithmeticInstruction) handleArithmetic(handle, instructionList);
-        if (instruction instanceof LCMP) handleLongComparison();
+        if (instruction instanceof LCMP) handleLongComparison(handle, instructionList);
         else if (instruction instanceof IfInstruction) handleComparison(handle, instructionList);
+
+        if (instruction instanceof GotoInstruction) handleGoTo(handle, instructionList);
     }
 
     // checks if the Instruction Loads a constant value.
@@ -150,20 +161,48 @@ public class ConstantFolder {
 
     // <------------------------------------------ Handling Instructions --------------------------------------------->
 
+    private void handleConversion(InstructionList instructionList, InstructionHandle handle) {
+        System.out.println("CONVERTING TOP OF STACK");
+        stack.push(convertValue(handle.getInstruction(), stack.pop()));
+        removeHandle(instructionList, handle);
+    }
+
+    private void handleGoTo(InstructionHandle handle, InstructionList instructionList) {
+        if (deleteElseBranch){
+            deleteElseBranch = false;
+            GotoInstruction instruction = (GotoInstruction) handle.getInstruction();
+            InstructionHandle targetHandle = instruction.getTarget();
+            removeHandle(instructionList, handle, targetHandle.getPrev());
+        }
+    }
+
     // Method that handles Long Comparisons.
-    private void handleLongComparison() {
+    private void handleLongComparison(InstructionHandle handle, InstructionList instructionList) {
         long first = (Long) stack.pop();
         long second = (Long) stack.pop();
 
-        stack.push(first >= second ? 1 : -1);
+        int result = first >= second ? 1 : -1;
+        removePreviousTwoLoadInstructions(instructionList);
+        handle.setInstruction(createLoadInstruction(result));
+        loadInstructions.push(handle);
+        stack.push(result);
         //removeHandle(instructionList, handle);
     }
 
     // Method that handles comparison instructions.
     private void handleComparison(InstructionHandle handle, InstructionList instructionList) {
         boolean outcome = parseComparisonInstruction(handle.getInstruction());
-        condenseOperationInstructions(instructionList, handle, outcome? 1:0);
+        IfInstruction instruction = (IfInstruction) handle.getInstruction();
+        deleteElseBranch = false;
+        if (outcome) {
+            InstructionHandle targetHandle = instruction.getTarget();
+            removeHandle(instructionList, handle, targetHandle.getPrev());
+        } else {
+            removeHandle(instructionList, handle);
+            deleteElseBranch = true;
+        }
         //instructionList.insert(createLoadInstruction(outcome ? 1 : 0));
+        //removePreviousTwoLoadInstructions(instructionList);
         //removeHandle(instructionList, handle);
     }
 
@@ -215,7 +254,30 @@ public class ConstantFolder {
         }
     }
 
+    private void removeHandle(InstructionList instructionList, InstructionHandle handle, InstructionHandle targetHandle) {
+        System.out.println("DELETING ALL BETWEEN: " + handle + " TO " + targetHandle);
+        try {
+            instructionList.delete(handle, targetHandle);
+        } catch (TargetLostException ignored){
+            System.out.println("UNABLE TO DELETE ALL");
+        }
+
+    }
+
     // <------------------------------------------------ Helper Methods ----------------------------------------------->
+
+    private Number convertValue(Instruction instruction, Number value) {
+        if (instruction instanceof I2D || instruction instanceof L2D || instruction instanceof F2D){
+            return value.doubleValue();
+        } else if (instruction instanceof I2F || instruction instanceof L2F || instruction instanceof D2F){
+            return value.doubleValue();
+        } else if (instruction instanceof I2L || instruction instanceof D2L || instruction instanceof F2L){
+            return value.doubleValue();
+        } else if (instruction instanceof D2I || instruction instanceof F2I || instruction instanceof L2I){
+            return value.doubleValue();
+        }
+        throw new IllegalStateException("Instruction not recognised");
+    }
 
     /** used when performing an operation such as arithmetic or comparison, to basically reduce 3 instructions to 1.
      * 3 instructions being: LOAD X, LOAD Y, OPERATION. into just: LOAD Z, where Z is the result.
@@ -237,6 +299,7 @@ public class ConstantFolder {
     private void switchInstructionToLoadNumber(InstructionHandle handle, Number value){
         Instruction loadInstruction = createLoadInstruction(value);
         assert loadInstruction != null;
+        System.out.println("SWITCHING INSTRUCTION: " + handle.getInstruction() + " WITH: " + loadInstruction);
         handle.setInstruction(loadInstruction);
         loadInstructions.push(handle);
     }
@@ -261,10 +324,11 @@ public class ConstantFolder {
     /** takes in a Comparison Instruction, and creates the boolean value using the values in the stack.
      *
      * @param instruction a Comparison Instruction, which is used to figure out which comparison to do.
-     * @return returns the result of the Comparison Instruction.
+     * @return the result of the Comparison Instruction.
      */
 	private boolean parseComparisonInstruction(Instruction instruction){
     	// comparisons with the integer value 0.
+        System.out.println("SCANNING THROUGH SPECIAL COMPARISONS");
     	if (instruction instanceof IFLE) return (Integer) stack.pop() <= 0;
 		else if (instruction instanceof IFLT) return (Integer) stack.pop() < 0;
 		else if (instruction instanceof IFGE) return (Integer) stack.pop() >= 0;
@@ -273,6 +337,7 @@ public class ConstantFolder {
 		else if (instruction instanceof IFNE) return (Integer) stack.pop() != 0;
 
 		// comparisons with integers.
+        System.out.println("SCANNING THROUGH REGULAR COMPARISONS");
 		int first = (Integer) stack.pop();
 		int second = (Integer) stack.pop();
 
@@ -337,7 +402,6 @@ public class ConstantFolder {
 		} else if (nextInstruction instanceof LCONST){
 			return ((LCONST) nextInstruction).getValue();
 		}
-
 
 		return null;
 	}
