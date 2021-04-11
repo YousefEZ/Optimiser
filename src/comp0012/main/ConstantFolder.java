@@ -11,7 +11,6 @@ import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Stack;
 
@@ -32,14 +31,17 @@ public class ConstantFolder {
     private ConstantPoolGen cpgen;
     private Stack<Number> valuesStack;
     private Stack<InstructionHandle> loadInstructions;
-    private Stack<Integer> protectedVariables;
     private HashMap<Integer, Number> variables;
-    private ArrayList<Integer> loopBounds;
+    private ArrayList<InstructionHandle> loopBounds;
+
+    // these are used for PeepHole Optimization (Detecting dead code).
+    private HashMap<Integer, InstructionHandle[]> variableInstructions;
+    private HashMap<Integer, Boolean> variableUsed;
 
     private boolean deleteElseBranch;
-    private boolean blockArithmeticOperation;
+    private boolean blockOperationIfInLoop;
 
-    private boolean DEBUG;
+    private static final boolean LOG = true; // switch this to false if you don't want logging.
 
     public ConstantFolder(String classFilePath) {
         try {
@@ -49,35 +51,15 @@ public class ConstantFolder {
         } catch (IOException e) {
             e.printStackTrace();
         }
-
-        DEBUG = true; // used to display logs about operations on instructions.
     }
 
-    // <--------------------------------------- Display Methods (Helper) -------------------------------------------->
-
-    private void displayLog(String log) {
-        if (DEBUG) System.out.println(log);
-    }
-
-    private void displayNewMethod(String methodName){
-        displayLog("------------------");
-        displayLog("|| NEXT METHOD: ||");
-        displayLog(methodName);
-        displayLog("-----------------");
-    }
-
-    private void displayNextClass(){
-        displayLog("-----------------");
-        displayLog("||             ||");
-        displayLog("|| NEXT CLASS  ||");
-        displayLog("||             ||");
-        displayLog("-----------------");
+    private void displayLog(String log){
+        if (LOG) System.out.println(log);
     }
 
     // <------------------------------------------------ Optimisation ------------------------------------------------->
 
-    /** @noinspection WeakerAccess */
-    public void optimize() {
+    public void initialise(){
         cgen = new ClassGen(original);
         cgen.setMajor(50);
         cpgen = cgen.getConstantPool();
@@ -86,24 +68,46 @@ public class ConstantFolder {
         variables = new HashMap<Integer, Number>();
         loadInstructions = new Stack<InstructionHandle>();
 
-        // Implement your optimization here
-        Method[] methods = cgen.getMethods(); // gets all the methods.
-        displayLog(Arrays.toString(cgen.getMethods()));
-        for (Method method : methods) {
-            deleteElseBranch = false;
-            blockArithmeticOperation = false;
-            displayNewMethod(method.getName());
-            optimizeMethod(method); // optimizes each method.
-            loadInstructions.clear();
-            valuesStack.clear(); // clears stack for next method.
-            variables.clear(); // clears variables for next method.
-        }
-        PeepHole.optimise(cgen, cpgen);
-        PeepHole.optimise(cgen, cpgen);
-        PeepHole.optimise(cgen, cpgen);
+        variableInstructions = new HashMap<Integer, InstructionHandle[]>();
+        variableUsed = new HashMap<Integer, Boolean>();
+        displayLog("[INIT] Initialization Step Complete.");
+        displayLog("**********[READY] Ready To Optimize Class: " + cgen.getClassName() + "**********");
+    }
 
-        displayNextClass();
+    /** @noinspection WeakerAccess */
+    public void optimize() {
+        initialise();
+
+        // Implement your optimization here
+        runOptimization();
         this.optimized = cgen.getJavaClass();
+    }
+
+    private void runOptimization(){
+        int numberOfMethods = cgen.getMethods().length;
+        for (int methodPosition = 0; methodPosition < numberOfMethods; methodPosition++ ) {
+            displayLog("-------------- [RUN_OPTIMIZE] Starting Optimization On: " + cgen.getMethodAt(methodPosition).getName() + " --------------");
+            runRegularOptimization(methodPosition);
+            runPeepHoleOptimization(methodPosition);
+        }
+    }
+
+    private void runRegularOptimization(int methodPosition){
+        displayLog("============= [OPTIMIZE] Starting Regular Optimization =============");
+        regularOptimization(cgen.getMethodAt(methodPosition)); // optimizes each method.
+        clearDataContainers();
+        displayLog("\n");
+    }
+
+    private void runPeepHoleOptimization(int methodPosition){
+        displayLog("============= [OPTIMIZE] Starting PeepHole Optimization =============");
+        boolean optimized = false;
+        while (!optimized){
+            // keeps doing peephole optimization until there are no more changes.
+            optimized = peepHoleOptimization(cgen.getMethodAt(methodPosition));
+            clearDataContainers();
+        }
+        displayLog("\n");
     }
 
     // replaces the original method code with the optimized method code.
@@ -114,22 +118,36 @@ public class ConstantFolder {
         cgen.replaceMethod(originalMethod, newMethod);
     }
 
+    // clears all the data in all the containers.
+    private void clearDataContainers() {
+        deleteElseBranch = false;
+        blockOperationIfInLoop = false;
+        loadInstructions.clear();
+        valuesStack.clear(); // clears stack for next method.
+        variables.clear(); // clears variables for next method.
+        variableInstructions.clear();
+        variableUsed.clear();
+        displayLog("[CLEAR_DATA] Cleared All Data On Stack");
+    }
+
     // <--------------------------------------------- Method Optimization --------------------------------------------->
 
-    private void optimizeMethod(Method method) {
+    private void regularOptimization(Method method) {
+        displayLog("[REGULAR_OPTIMIZATION] Starting Regular Optimization");
         Code methodCode = method.getCode(); // gets the code inside the method.
         InstructionList instructionList = new InstructionList(methodCode.getCode()); // gets code and makes an list of Instructions.
         MethodGen methodGen = new MethodGen(method.getAccessFlags(), method.getReturnType(), method.getArgumentTypes(),
                 null, method.getName(), cgen.getClassName(), instructionList, cpgen);
-
+        displayLog("*[REGULAR_OPTIMIZATION] Display Initial Instruction List");
         displayLog(instructionList.toString());
+
         loadLoopBounds(instructionList);
         for (InstructionHandle handle : instructionList.getInstructionHandles()) {
             handleInstruction(handle, instructionList);
         }
+        displayLog("*[REGULAR_OPTIMIZATION] Optimized Code: ");
         displayLog(instructionList.toString());
         instructionList.setPositions(true);
-        displayLog(instructionList.toString());
         replaceMethodCode(method, methodGen);
     }
 
@@ -140,92 +158,46 @@ public class ConstantFolder {
      */
     private void handleInstruction(InstructionHandle handle, InstructionList instructionList){
         Instruction instruction = handle.getInstruction(); // gets the instruction from the instruction handle.
-        //displayLog(instruction.toString());
+        displayLog("[INSTRUCTION] Next Instruction -> " + instruction);
 
         // Comparison Instructions
         if (instruction instanceof ArithmeticInstruction) handleArithmetic(handle, instructionList);
         if (instruction instanceof LCMP) handleLongComparison(handle, instructionList);
         else if (instruction instanceof IfInstruction) handleComparison(handle, instructionList);
 
+        if (instruction instanceof ConversionInstruction) handleConversion(instructionList, handle);
+        if (instruction instanceof StoreInstruction) handleStore(handle);
+        if (instruction instanceof GotoInstruction) handleGoTo(handle, instructionList);
+
         // Load Instructions
         if (isLoadConstantValueInstruction(instruction)) handleLoad(handle);
         else if (instruction instanceof LoadInstruction) handleVariableLoad(instructionList, handle);
-        else blockArithmeticOperation = false;
+        else blockOperationIfInLoop = false;
 
-        if (instruction instanceof ConversionInstruction) handleConversion(instructionList, handle);
+        displayLog("");
 
-        // Store Instructions
-        if (instruction instanceof StoreInstruction) handleStore(handle);
-
-
-        if (instruction instanceof GotoInstruction) handleGoTo(handle, instructionList);
     }
 
-    // checks if the Instruction Loads a constant value.
-    private boolean isLoadConstantValueInstruction(Instruction instruction){
-        return (instruction instanceof LDC || instruction instanceof LDC2_W ||
-                instruction instanceof SIPUSH || instruction instanceof BIPUSH ||
-                instruction instanceof ICONST || instruction instanceof FCONST ||
-                instruction instanceof DCONST || instruction instanceof LCONST);
-    }
-
-    private void loadLoopBounds(InstructionList instList) {
-        loopBounds = new ArrayList<Integer>();
-        for(InstructionHandle handle : instList.getInstructionHandles()) {
+    private void loadLoopBounds(InstructionList instructionList) {
+        loopBounds = new ArrayList<InstructionHandle>();
+        for(InstructionHandle handle : instructionList.getInstructionHandles()) {
             if(handle.getInstruction() instanceof GotoInstruction) {
                 GotoInstruction instruction = (GotoInstruction) handle.getInstruction(); // casts GoToInstruction
-
                 if (instruction.getTarget().getPosition() < handle.getPosition()){ // if the GoTo leads upwards.
-                    loopBounds.add(instruction.getTarget().getPosition()); // start of loop
-                    loopBounds.add(handle.getPosition()); // end of loop (GOTO Instruction)
+                    loopBounds.add(instruction.getTarget()); // start of loop
+                    loopBounds.add(handle); // end of loop (GOTO Instruction)
                 }
             }
         }
-    }
-
-    private boolean instructionIsInALoop(InstructionHandle handle){
-        return locateLoopForInstruction(handle) != -1;
-    }
-
-    private int locateLoopForInstruction(InstructionHandle handle){
-        int instructionPosition = handle.getPosition();
-        System.out.println("INSTRUCTION IS IN A LOOP");
-        for (int loopStartBounds = 0; loopStartBounds < loopBounds.size(); loopStartBounds += 2){
-            if (instructionPosition > loopBounds.get(loopStartBounds)  && instructionPosition < loopBounds.get(loopStartBounds+1)){
-                return loopBounds.get(loopStartBounds);
-            }
-        }
-        return -1;
-    }
-
-    private boolean variableChangesInLoop(InstructionList instructionList, InstructionHandle handle, int key){
-        int loopStart = locateLoopForInstruction(handle);
-        if (loopStart == -1) return false;
-        InstructionHandle handleInLoop = instructionList.findHandle(loopStart);
-        System.out.println("GIVEN KEY -> " + key);
-        //System.out.println((handleInLoop.getInstruction() instanceof GotoInstruction));
-        while (!(handleInLoop.getInstruction() instanceof GotoInstruction)){
-            Instruction instruction = handleInLoop.getInstruction();
-            System.out.println("CHECKING IF NEXT INSTRUCTION IS A STORE: " + instruction);
-            if (instruction instanceof StoreInstruction) {
-                if (((StoreInstruction) instruction).getIndex() == key) return true; // && ((StoreInstruction) instruction).getIndex() == key)
-            } else if (instruction instanceof IINC){
-                if (((IINC) instruction).getIndex() == key) return true; // && ((StoreInstruction) instruction).getIndex() == key)
-            }
-
-            handleInLoop = handleInLoop.getNext();
-        }
-        return false;
+        displayLog("*[LOAD_LOOP_BOUNDS] Loaded Loop Bounds: " + loopBounds.toString());
     }
 
     // <------------------------------------------ Handling Instructions --------------------------------------------->
 
+    // Method that converts the value on the top of the stack to another type.
     private void handleConversion(InstructionList instructionList, InstructionHandle handle) {
-        Number topOfStack = valuesStack.pop();
-        displayLog("CONVERTING TOP OF STACK <- " + topOfStack);
-        Number convertedValue = convertValue(handle.getInstruction(),topOfStack);
-        displayLog("CONVERTED INTO -> " + convertedValue);
-        valuesStack.push(convertedValue);
+        valuesStack.push(convertValue(handle.getInstruction(), valuesStack.pop()));
+        displayLog("[CONVERSION] Converted Top Of Stack Value To: " + valuesStack.peek());
         removeHandle(instructionList, handle);
     }
 
@@ -240,6 +212,10 @@ public class ConstantFolder {
 
     // Method that handles Long Comparisons.
     private void handleLongComparison(InstructionHandle handle, InstructionList instructionList) {
+        if (blockOperationIfInLoop) {
+            displayLog("[COMPARISON] Comparison Statement: " + handle.getInstruction() + " has been blocked.");
+            return;
+        }
         long first = (Long) valuesStack.pop();
         long second = (Long) valuesStack.pop();
 
@@ -248,113 +224,252 @@ public class ConstantFolder {
         handle.setInstruction(createLoadInstruction(result));
         loadInstructions.push(handle);
         valuesStack.push(result);
-        //removeHandle(instructionList, handle);
     }
 
     // Method that handles comparison instructions.
     private void handleComparison(InstructionHandle handle, InstructionList instructionList) {
-        if (instructionIsInALoop(handle)) return;
-        boolean outcome = parseComparisonInstruction(handle.getInstruction());
-        if (!instructionIsInALoop(handle)) {
-            if (instructionComparingWithZero(handle.getInstruction())) removeHandle(instructionList, loadInstructions.pop());
-            else removePreviousTwoLoadInstructions(instructionList);
+        if (blockOperationIfInLoop) {
+            displayLog("[COMPARISON] Comparison Statement: " + handle.getInstruction() + " has been blocked.");
+            return;
         }
-        IfInstruction instruction = (IfInstruction) handle.getInstruction();
-        deleteElseBranch = false;
+
+        IfInstruction comparisonInstruction = (IfInstruction) handle.getInstruction();
+        boolean outcome = parseComparisonInstruction(comparisonInstruction);
+        displayLog("[COMPARISON] Comparison Outcome: " + outcome);
+
+        if (isInstructionComparingWithZero(comparisonInstruction)) removeHandle(instructionList, loadInstructions.pop());
+        else removePreviousTwoLoadInstructions(instructionList);
+
         if (outcome) {
             removeHandle(instructionList, handle);
             deleteElseBranch = true;
         } else {
-            InstructionHandle targetHandle = instruction.getTarget();
+            InstructionHandle targetHandle = comparisonInstruction.getTarget();
             removeHandle(instructionList, handle, targetHandle.getPrev());
         }
-        //instructionList.insert(createLoadInstruction(outcome ? 1 : 0));
-        //removePreviousTwoLoadInstructions(instructionList);
-        //removeHandle(instructionList, handle);
     }
 
     // Method that handles storing values into a variable.
     private void handleStore(InstructionHandle handle) {
-        displayLog("STORE INSTRUCTION DETECTED");
         Number value = valuesStack.pop();
         loadInstructions.pop();
-        displayLog("STORING VALUE: " + value);
         int index = ((StoreInstruction) handle.getInstruction()).getIndex();
+        displayLog("[STORE] Storing Value: " + value);
         variables.put(index, value);
     }
 
     // Method that handles loading in values from variables.
     private void handleVariableLoad(InstructionList instructionList, InstructionHandle handle) {
-        displayLog("LOADING VARIABLE");
-        Number variableValue = variables.get(((LoadInstruction) handle.getInstruction()).getIndex());
-        displayLog("VARIABLE VALUE: " + variableValue + " LOADED INTO STACK");
-        valuesStack.push(variableValue);
+        int variableKey = ((LoadInstruction) handle.getInstruction()).getIndex();
+        valuesStack.push(variables.get(variableKey));
         loadInstructions.push(handle);
-        blockArithmeticOperation = blockArithmeticOperation || variableChangesInLoop(instructionList, handle, ((LoadInstruction) handle.getInstruction()).getIndex());
-        if (blockArithmeticOperation) System.out.println("BLOCKING ARITHMETIC OPERATION");
+        displayLog("[LOAD_VARIABLE] Loaded Variable Value: " + valuesStack.peek());
+        // if not already blocking: block if this variable load is in a loop & the variable stores a value in the loop.
+        blockOperationIfInLoop = blockOperationIfInLoop || variableChangesInLoop(instructionList, handle, variableKey);
+        displayLog("[BLOCK] Status: " + blockOperationIfInLoop);
     }
 
     // Method that handles loading in values from a LoadInstruction.
     private void handleLoad(InstructionHandle handle) {
-        displayLog("LOAD INSTRUCTION DETECTED");
-        Number nextValue = getInstructionConstant(handle.getInstruction()); // retrieves the value from the load instruction.
-        displayLog("LOADED VALUE: " + nextValue);
-        valuesStack.push(nextValue); // pushes the value retrieved from the load instruction onto the stack.
+        // retrieves the value from the load instruction.
+        // pushes the value retrieved from the load instruction onto the stack.
+        valuesStack.push(getLoadConstantValue(handle.getInstruction()));
         loadInstructions.push(handle); // pushes the load instruction onto the stack.
+        displayLog("[LOAD_CONSTANT] Loaded Constant Value: " + valuesStack.peek());
     }
 
     // Method that handles an arithmetic operation and loads it in to the instruction list.
     private void handleArithmetic(InstructionHandle handle, InstructionList instructionList) {
-        if (blockArithmeticOperation) {System.out.println("ARITHMETIC OPERATION BLOCK"); return;}
+        if (blockOperationIfInLoop) return; // if block operation is true, then skip this instruction.
         valuesStack.push(performArithmeticOperation(handle.getInstruction()));
+        displayLog("[ARITHMETIC_OPERATION] Calculated Value: " + valuesStack.peek() + " Pushed Onto Stack.");
         condenseOperationInstructions(instructionList, handle, valuesStack.peek()); // using peek because it needs to be in stack.
     }
 
+    private void removeHandle(InstructionList instructionList, InstructionHandle handle, InstructionHandle targetHandle) {
+        try {
+            instructionList.delete(handle, targetHandle);
+        } catch (TargetLostException ignored){ }
+    }
+
+    // <=========================================== PeepHole Optimization ============================================>
+
+    private boolean peepHoleOptimization(Method method){
+        InstructionList instructionList = new InstructionList(method.getCode().getCode()); // gets code and makes an list of Instructions.
+        MethodGen methodGen = new MethodGen(method.getAccessFlags(), method.getReturnType(), method.getArgumentTypes(),
+                null, method.getName(), cgen.getClassName(), instructionList, cpgen);
+
+        loadLoopBounds(instructionList);
+        for (InstructionHandle handle : instructionList.getInstructionHandles()) {
+            checkInstruction(handle);
+        }
+        boolean optimized = removeDeadCode(instructionList);
+
+        instructionList.setPositions(true);
+        replaceMethodCode(method, methodGen);
+        return optimized;
+    }
+
+    // deletes dead code, i.e. variables that are not used.
+    private boolean removeDeadCode(InstructionList instructionList){
+        displayLog("[DEAD_CODE_REMOVE] Removing The Following Instructions: ");
+        boolean optimized = true;
+        for (int key: variableUsed.keySet()){
+            if (!variableUsed.get(key)){
+                optimized = false;
+                removeHandle(instructionList, variableInstructions.get(key)[0]); // delete the LOAD instruction.
+                removeHandle(instructionList, variableInstructions.get(key)[1]); // delete the STORE instruction.
+            }
+        }
+        return optimized;
+    }
+
+    //                       <===================== Instruction Recorders =====================>
+
+    /** handles the instruction inside of the InstructionHandle by first checking its type then optimising it.
+     *
+     * @param handle wrapper that contains the instruction.
+     */
+    private void checkInstruction(InstructionHandle handle){
+        Instruction instruction = handle.getInstruction(); // gets the instruction from the instruction handle.
+
+        // Load Instructions
+        if (isLoadConstantValueInstruction(instruction)) checkLoad(handle);
+        else if (instruction instanceof LoadInstruction) checkVariableLoad(handle);
+
+        // Store Instructions
+        if (instruction instanceof StoreInstruction) checkStore(handle);
+    }
+
+    // Method that handles loading in values from variables. If a variable value is used then the variable is not dead.
+    private void checkVariableLoad(InstructionHandle handle) {
+        int key = ((LoadInstruction) handle.getInstruction()).getIndex();
+        loadInstructions.push(handle);
+        variableUsed.put(key, true);
+    }
+
+    // Method that handles loading in values from a LoadInstruction.
+    private void checkLoad(InstructionHandle handle) {
+        loadInstructions.push(handle); // pushes the load instruction onto the stack.
+    }
+
+    // Method that handles storing values into a variable.
+    private void checkStore(InstructionHandle handle) {
+        int key = ((StoreInstruction) handle.getInstruction()).getIndex();
+        variableUsed.put(key, false); // has not been used yet, so set to false.
+
+        InstructionHandle[] instructions = {loadInstructions.pop(), handle}; // protect the LOAD & STORE Instructions.
+        variableInstructions.put(key, instructions);
+    }
+
+
+    // <============================================= Helper Methods ==================================================>
+
+    // checks if the Instruction Loads a constant value.
+    private static boolean isLoadConstantValueInstruction(Instruction instruction){
+        return (instruction instanceof LDC || instruction instanceof LDC2_W ||
+                instruction instanceof SIPUSH || instruction instanceof BIPUSH ||
+                instruction instanceof ICONST || instruction instanceof FCONST ||
+                instruction instanceof DCONST || instruction instanceof LCONST);
+    }
+
+    // checks if this instruction is an instruction that gets compared with zero.
+    private static boolean isInstructionComparingWithZero(Instruction instruction){
+        return instruction instanceof  IFLE || instruction instanceof IFLT || instruction instanceof IFGE ||
+                instruction instanceof IFGT || instruction instanceof IFEQ || instruction instanceof IFNE;
+    }
+
+    /** used when performing an operation such as arithmetic or comparison, to basically reduce 3 instructions to 1.
+     * 3 instructions being: LOAD X, LOAD Y, OPERATION. into just: LOAD Z, where Z is the result.
+     *
+     * @param instructionList list of instructions in the method, used to delete the unneeded load statements.
+     * @param handle instruction wrapper that contains the instruction that performs the operation.
+     * @param value the resultant value from the operation, that requires a Load Instruction.
+     */
+    private void condenseOperationInstructions(InstructionList instructionList, InstructionHandle handle, Number value) {
+        displayLog("[CONDENSING] Condensing Instructions Into LOAD: " + value);
+        removePreviousTwoLoadInstructions(instructionList); // remove the 2 LOAD Instructions
+        switchInstructionToLoadNumber(handle, value); // creates a load instruction that replaces the operation.
+    }
+
+    /** creates a load instruction using the value argument given, and replaces the instruction in handle with it.
+     *
+     * @param handle an instruction wrapper that holds the instruction to be replaced.
+     * @param value a value that the LoadInstruction will contain (i.e. LOAD value)
+     */
+    private void switchInstructionToLoadNumber(InstructionHandle handle, Number value){
+        handle.setInstruction(createLoadInstruction(value));
+        loadInstructions.push(handle);
+        displayLog("[SWITCHED_INSTRUCTION] Switched Instruction Into Load: " + value + " | " + handle.getInstruction());
+    }
+
+    /** pops the load instructions from the stack, and using that to reference the instructions that need to get deleted.
+     * this method is primarily used to remove the load instructions that were used for operations (Arithmetic/Comparison).
+     *
+     * @param instructionList InstructionList instance that holds all the instructions for a method.
+     */
+    private void removePreviousTwoLoadInstructions(InstructionList instructionList) {
+        removeHandle(instructionList, loadInstructions.pop());
+        removeHandle(instructionList, loadInstructions.pop());
+    }
+
+    private InstructionHandle locateLoopForInstruction(InstructionHandle handle){
+        int instructionPosition = handle.getPosition();
+        for (int loopStartBounds = 0; loopStartBounds < loopBounds.size(); loopStartBounds += 2){
+            if (instructionPosition >= loopBounds.get(loopStartBounds).getPosition()  && instructionPosition < loopBounds.get(loopStartBounds+1).getPosition()){
+                displayLog("[LOOP_LOCATED] Loop Located @ " + loopBounds.get(loopStartBounds).getInstruction());
+                return loopBounds.get(loopStartBounds);
+            }
+        }
+        return null;
+    }
+
+    private InstructionHandle locateTrueInstructionHandle(InstructionList instructionList, InstructionHandle handle){
+        if (handle == null) return null;
+        for (InstructionHandle instructionHandle: instructionList.getInstructionHandles()){
+            if (instructionHandle.getInstruction().equals(handle.getInstruction())){
+                return handle;
+            }
+        }
+        return null;
+    }
+
+    private boolean variableChangesInLoop(InstructionList instructionList, InstructionHandle handle, int key){
+        InstructionHandle handleInLoop = locateTrueInstructionHandle(instructionList, locateLoopForInstruction(handle));
+
+        while (handleInLoop != null && !(handleInLoop.getInstruction() instanceof GotoInstruction)){
+            Instruction instruction = handleInLoop.getInstruction();
+            if (instruction instanceof StoreInstruction) {
+                if (((StoreInstruction) instruction).getIndex() == key) return true; // && ((StoreInstruction) instruction).getIndex() == key)
+            } else if (instruction instanceof IINC){
+                if (((IINC) instruction).getIndex() == key) return true; // && ((StoreInstruction) instruction).getIndex() == key)
+            }
+            handleInLoop = handleInLoop.getNext();
+        }
+        return false;
+    }
+
     private void removeHandle(InstructionList instructionList, InstructionHandle handle) {
-        if (handle == null) return;
+        displayLog("[REMOVING] Removing Instruction: " + handle.getInstruction());
+        InstructionHandle nextHandle = handle.getNext(); // used to get the next instruction if its a target.
         try {
             instructionList.delete(handle);
         } catch (TargetLostException e) {
-            InstructionHandle[] targets = e.getTargets();
-
-            for (InstructionHandle target : targets) {
+            for (InstructionHandle target : e.getTargets()) {
                 InstructionTargeter[] targeters = target.getTargeters();
-
-                for (InstructionTargeter targeter : targeters){
-                    InstructionHandle nextHandle = target.getNext();
-                    while (!(instructionList.contains(nextHandle)) && nextHandle != null) nextHandle = target.getNext();
-                    targeter.updateTarget(target, nextHandle);
-                }
+                for (InstructionTargeter targeter : targeters) targeter.updateTarget(target, nextHandle);
             }
         }
     }
 
-    private void removeHandle(InstructionList instructionList, InstructionHandle handle, InstructionHandle targetHandle) {
-        displayLog("DELETING ALL BETWEEN: " + handle + " TO " + targetHandle);
-        try {
-            instructionList.delete(handle, targetHandle);
-        } catch (TargetLostException ignored){
-            displayLog("UNABLE TO DELETE ALL");
-        }
-
-    }
-
-    // <----------------------------------------- PeepHole Optimization ----------------------------------------------->
-
-
-
-    // <------------------------------------------------ Helper Methods ----------------------------------------------->
-
-    private boolean instructionComparingWithZero(Instruction instruction){
-        return instruction instanceof  IFLE ||
-        instruction instanceof IFLT ||
-        instruction instanceof IFGE ||
-        instruction instanceof IFGT ||
-        instruction instanceof IFEQ ||
-        instruction instanceof IFNE;
-    }
-
-    private Number convertValue(Instruction instruction, Number value) {
+    /** Converts Number value into another type. First letter is the starting type, second letter is the target type
+     * i.e. I2D means Integer to Double.
+     *
+     * @param instruction Instruction instance that has the type of conversion.
+     * @param value the value to convert to.
+     * @return converted value.
+     */
+    private static Number convertValue(Instruction instruction, Number value) {
         if (instruction instanceof I2D || instruction instanceof L2D || instruction instanceof F2D){
             return value.doubleValue();
         } else if (instruction instanceof I2F || instruction instanceof L2F || instruction instanceof D2F){
@@ -367,47 +482,6 @@ public class ConstantFolder {
         throw new IllegalStateException("Instruction not recognised");
     }
 
-    /** used when performing an operation such as arithmetic or comparison, to basically reduce 3 instructions to 1.
-     * 3 instructions being: LOAD X, LOAD Y, OPERATION. into just: LOAD Z, where Z is the result.
-     *
-     * @param instructionList list of instructions in the method, used to delete the unneeded load statements.
-     * @param handle instruction wrapper that contains the instruction that performs the operation.
-     * @param value the resultant value from the operation, that requires a Load Instruction.
-     */
-    private void condenseOperationInstructions(InstructionList instructionList, InstructionHandle handle, Number value) {
-        removePreviousTwoLoadInstructions(instructionList); // remove the 2 LOAD Instructions
-        switchInstructionToLoadNumber(handle, value); // creates a load instruction that replaces the operation.
-    }
-
-    /** creates a load instruction using the value argument given, and replaces the instruction in handle with it.
-     *
-     * @param handle an instruction wrapper that holds the instruction to be replaced.
-     * @param value a value that the LoadInstruction will contain (i.e. LOAD value)
-     */
-    private void switchInstructionToLoadNumber(InstructionHandle handle, Number value){
-        Instruction loadInstruction = createLoadInstruction(value);
-        displayLog("SWITCHING INSTRUCTION: " + handle.getInstruction() + " WITH: " + loadInstruction);
-        handle.setInstruction(loadInstruction);
-        loadInstructions.push(handle);
-    }
-
-    /** pops the load instructions from the stack, and using that to reference the instructions that need to get deleted.
-     * this method is primarily used to remove the load instructions that were used for operations (Arithmetic/Comparison).
-     *
-     * @param instructionList InstructionList instance that holds all the instructions for a method.
-     */
-    private void removePreviousTwoLoadInstructions(InstructionList instructionList) {
-        displayLog("REMOVING LOAD INSTRUCTION");
-
-        InstructionHandle instruction = loadInstructions.pop();
-        displayLog(instruction.toString());
-        removeHandle(instructionList, instruction);
-
-        instruction = loadInstructions.pop();
-        displayLog(instruction.toString());
-        removeHandle(instructionList, instruction);
-    }
-
     /** takes in a Comparison Instruction, and creates the boolean value using the values in the stack.
      *
      * @param instruction a Comparison Instruction, which is used to figure out which comparison to do.
@@ -415,7 +489,6 @@ public class ConstantFolder {
      */
 	private boolean parseComparisonInstruction(Instruction instruction){
     	// comparisons with the integer value 0.
-        displayLog("SCANNING THROUGH SPECIAL COMPARISONS");
     	if (instruction instanceof IFLE) return (Integer) valuesStack.pop() <= 0;
 		else if (instruction instanceof IFLT) return (Integer) valuesStack.pop() < 0;
 		else if (instruction instanceof IFGE) return (Integer) valuesStack.pop() >= 0;
@@ -423,8 +496,7 @@ public class ConstantFolder {
 		else if (instruction instanceof IFEQ) return (Integer) valuesStack.pop() == 0;
 		else if (instruction instanceof IFNE) return (Integer) valuesStack.pop() != 0;
 
-		// comparisons with integers.
-        displayLog("SCANNING THROUGH REGULAR COMPARISONS");
+		// comparisons with two values.
 		int first = (Integer) valuesStack.pop();
 		int second = (Integer) valuesStack.pop();
 
@@ -439,6 +511,7 @@ public class ConstantFolder {
 	}
 
     /** This method creates a load instruction using the value that was given to it.
+     * LDC2_W is for Doubles/Longs | LDC is for Floats/Integers.
      *
      * @param value a Number object that represents a value.
      * @return an Load Instruction that loads the given number value.
@@ -458,38 +531,37 @@ public class ConstantFolder {
 		throw new IllegalStateException("Illegal Value");
 	}
 
-
     /** Gets the value that is to be loaded from a load instruction.
 	 *
 	 * @param nextInstruction the LoadInstruction that holds the value to be loaded.
 	 * @return a Number object that represents the value.
 	 */
-	private Number getInstructionConstant(Instruction nextInstruction) {
+	private Number getLoadConstantValue(Instruction nextInstruction) {
 		if (nextInstruction instanceof LDC) {
+		    // LDC loads a integer/float onto the stack.
 			return (Number) ((LDC) nextInstruction).getValue(cpgen);
-
 		} else if (nextInstruction instanceof LDC2_W) {
+		    // LDC2_W loads a long/double onto the stack.
 			return ((LDC2_W) nextInstruction).getValue(cpgen);
-
 		} else if (nextInstruction instanceof BIPUSH) {
+		    // BIPUSH loads a byte onto the stack.
 			return ((BIPUSH) nextInstruction).getValue();
-
 		} else if (nextInstruction instanceof SIPUSH) {
+		    // SIPUSH loads a short onto the stack.
 			return ((SIPUSH) nextInstruction).getValue();
-
 		} else if (nextInstruction instanceof ICONST){
+		    // ICONST loads an integer constant (value between -1 and 5 inclusive).
 			return ((ICONST) nextInstruction).getValue();
-
 		} else if (nextInstruction instanceof FCONST){
+		    // FCONST loads a float constant (0.0 or 1.0 or 2.0).
 			return ((FCONST) nextInstruction).getValue();
-
 		} else if (nextInstruction instanceof DCONST){
+		    // DCONST loads a double constant (0.0 or 1.0).
 			return ((DCONST) nextInstruction).getValue();
-
 		} else if (nextInstruction instanceof LCONST){
+		    // LCONST loads a long constant (0 or 1).
 			return ((LCONST) nextInstruction).getValue();
 		}
-
 		return null;
 	}
 
@@ -502,6 +574,9 @@ public class ConstantFolder {
 		Number first = valuesStack.pop();
 
 		Number combinedValue = null;
+
+		// I represents Integer / D represents Double / F represents Float / L represents Long.
+        // 4 possible operations (ADD / SUB / MUL / DIV).
 
 		// <------ Integer Operations ------>
 		if (nextInstruction instanceof IADD){
@@ -546,9 +621,8 @@ public class ConstantFolder {
 		} else if (nextInstruction instanceof LDIV){
 			combinedValue = first.longValue() / second.longValue();
 		}
-
-		displayLog("CALCULATED -> " + combinedValue);
 		// if null then arithmetic operation NOT RECOGNISED.
+        if (combinedValue == null) throw new IllegalStateException("Unrecognised Arithmetic Operation");
         return combinedValue;
 
 	}
