@@ -4,6 +4,7 @@ import org.apache.bcel.classfile.Code;
 import org.apache.bcel.classfile.Method;
 import org.apache.bcel.generic.*;
 
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Stack;
 
@@ -14,6 +15,8 @@ class PeepHole {
     private Stack<InstructionHandle> loadInstructions;
     private HashMap<Integer, Boolean> variables;
     private HashMap<Integer, InstructionHandle[]> variableInstructions;
+    private ArrayList<Integer> loopBounds;
+    private boolean lastInstructionWasLoad;
     private boolean DEBUG;
 
     private void displayLog(String log) {
@@ -46,6 +49,7 @@ class PeepHole {
         InstructionList instructionList = new InstructionList(methodCode.getCode()); // gets code and makes an list of Instructions.
         MethodGen methodGen = new MethodGen(method.getAccessFlags(), method.getReturnType(), method.getArgumentTypes(),
                 null, method.getName(), cgen.getClassName(), instructionList, cpgen);
+        System.out.println(instructionList);
 
         for (InstructionHandle handle : instructionList.getInstructionHandles()) {
             handleInstruction(handle, instructionList);
@@ -57,6 +61,9 @@ class PeepHole {
                 removeHandle(instructionList, variableInstructions.get(key)[1]);
             }
         }
+        System.out.println("OUTPUTTING REMAINDER LOAD INSTRUCTIONS");
+        System.out.println(loadInstructions);
+
         System.out.println("FINISHED DEAD CODE REMOVAL");
         System.out.println(instructionList);
         instructionList.setPositions(true);
@@ -72,6 +79,32 @@ class PeepHole {
         cgen.replaceMethod(originalMethod, newMethod);
     }
 
+    private boolean instructionIsInALoop(InstructionHandle handle){
+        return locateLoopForInstruction(handle) != -1;
+    }
+
+    private int locateLoopForInstruction(InstructionHandle handle){
+        int instructionPosition = handle.getPosition();
+        for (int loopStartBounds = 0; loopStartBounds < loopBounds.size(); loopStartBounds += 2){
+            if (instructionPosition > loopBounds.get(loopStartBounds)  && instructionPosition < loopBounds.get(loopStartBounds+1)){
+                return loopBounds.get(loopStartBounds);
+            }
+        }
+        return -1;
+    }
+
+    private boolean variableChangesInLoop(InstructionList instructionList, InstructionHandle handle, int key){
+        int loopStart = locateLoopForInstruction(handle);
+        InstructionHandle handleInLoop = instructionList.findHandle(loopStart);
+        while (!(handleInLoop.getInstruction() instanceof GotoInstruction)){
+            Instruction instruction = handleInLoop.getInstruction();
+            if (instruction instanceof StoreInstruction && ((StoreInstruction) instruction).getIndex() == key) return true;
+            handleInLoop = handleInLoop.getNext();
+        }
+        return false;
+    }
+
+
     /** handles the instruction inside of the InstructionHandle by first checking its type then optimising it.
      *
      * @param handle wrapper that contains the instruction.
@@ -81,8 +114,9 @@ class PeepHole {
         Instruction instruction = handle.getInstruction(); // gets the instruction from the instruction handle.
 
         // Load Instructions
-        if (isLoadConstantValueInstruction(instruction)) handleLoad(handle);
-        else if (instruction instanceof LoadInstruction) handleVariableLoad(handle);
+        if (isLoadConstantValueInstruction(instruction)) handleLoad(handle, instructionList);
+        else if (instruction instanceof LoadInstruction) handleVariableLoad(handle, instructionList);
+        else lastInstructionWasLoad = false;
 
         // Store Instructions
         if (instruction instanceof StoreInstruction) handleStore(handle);
@@ -97,16 +131,19 @@ class PeepHole {
     }
 
     // Method that handles loading in values from variables.
-    private void handleVariableLoad(InstructionHandle handle) {
+    private void handleVariableLoad(InstructionHandle handle, InstructionList instructionList) {
+        //if (lastInstructionWasLoad) removeHandle(instructionList, loadInstructions.pop());
         System.out.println("PUSHING VARIABLE LOAD: " + handle);
         loadInstructions.push(handle);
         variables.put(((LoadInstruction) handle.getInstruction()).getIndex(), true);
+        lastInstructionWasLoad = true;
     }
 
     // Method that handles loading in values from a LoadInstruction.
-    private void handleLoad(InstructionHandle handle) {
+    private void handleLoad(InstructionHandle handle, InstructionList instructionList) {
         System.out.println("PUSHING CONSTANT LOAD: " + handle);
         loadInstructions.push(handle); // pushes the load instruction onto the stack.
+        lastInstructionWasLoad = true;
     }
 
     // Method that handles storing values into a variable.
@@ -120,15 +157,25 @@ class PeepHole {
 
     private void removeHandle(InstructionList instructionList, InstructionHandle handle) {
         if (handle == null) return;
+        System.out.println("REMOVING INSTRUCTION -> " + handle.getInstruction() + " POSITION => " + handle.getPosition());
+        InstructionHandle nextHandle = handle.getNext();
         try {
             instructionList.delete(handle);
         } catch (TargetLostException e) {
+            System.out.println("HANDLE POSITION -> " + handle.getPosition());
+            System.out.println("REDIRECTING BRANCHES TO: " + nextHandle.getInstruction());
+            //instructionList.redirectBranches(handle, nextHandle);
+
             InstructionHandle[] targets = e.getTargets();
 
             for (InstructionHandle target : targets) {
+                //instructionList.redirectBranches(target, target.getNext());
+                //System.out.println(target.getNext());
+
                 InstructionTargeter[] targeters = target.getTargeters();
 
-                for (InstructionTargeter targeter : targeters) targeter.updateTarget(target, null);
+                for (InstructionTargeter targeter : targeters) { targeter.updateTarget(target, nextHandle);
+                }
             }
         }
     }
@@ -138,10 +185,13 @@ class PeepHole {
         loadInstructions = new Stack<InstructionHandle>();
         variables = new HashMap<Integer, Boolean>();
         variableInstructions = new HashMap<Integer, InstructionHandle[]>();
+        loopBounds = new ArrayList<Integer>();
         System.out.println(cgen.getClassName());
         for (Method method : methods) {
+            lastInstructionWasLoad = false;
             displayNewMethod(method.getName());
             optimiseMethod(method); // optimizes each method.
+            loopBounds.clear();
             loadInstructions.clear();
             variables.clear(); // clears variables for next method.
             variableInstructions.clear();
