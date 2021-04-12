@@ -62,6 +62,7 @@ public class ConstantFolder {
     public void initialise(){
         cgen = new ClassGen(original);
         cgen.setMajor(50);
+	cgen.setMinor(0);
         cpgen = cgen.getConstantPool();
 
         valuesStack = new Stack<Number>();
