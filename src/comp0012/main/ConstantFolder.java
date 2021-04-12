@@ -208,8 +208,8 @@ public class ConstantFolder {
     private void handleLongComparison(InstructionHandle handle, InstructionList instructionList) {
         if (blockOperationIfInLoop) return;
 
-        long first = valuesStack.pop().longValue();
-        long second = valuesStack.pop().longValue();
+        long first = (Long) valuesStack.pop();
+        long second = (Long) valuesStack.pop();
 
         // LCMP returns -1, 0, 1.
         int result = 0;
@@ -247,7 +247,8 @@ public class ConstantFolder {
         Number value = valuesStack.pop();
         loadInstructions.pop();
         displayLog("[STORE] Storing Value: " + value);
-        variables.put(((StoreInstruction) handle.getInstruction()).getIndex(), value);
+        int key = ((StoreInstruction) handle.getInstruction()).getIndex();
+        variables.put(key, value);
     }
 
     private void handleVariableLoad(InstructionList instructionList, InstructionHandle handle) {
@@ -411,7 +412,7 @@ public class ConstantFolder {
         for (int loopStartBounds = 0; loopStartBounds < loopBounds.size(); loopStartBounds += 2){
             InstructionHandle loopStartInstruction = loopBounds.get(loopStartBounds);
 
-            if (instructionPosition >= loopStartInstruction.getPosition()  && instructionPosition < loopStartInstruction.getPosition()){
+            if (instructionPosition >= loopStartInstruction.getPosition() && instructionPosition < loopStartInstruction.getNext().getPosition()){
                 displayLog("[LOOP_LOCATED] Loop Located @ " + loopStartInstruction.getInstruction());
                 return loopStartInstruction;
             }
