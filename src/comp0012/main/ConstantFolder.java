@@ -166,31 +166,30 @@ public class ConstantFolder {
         else if (instruction instanceof IfInstruction) handleComparison(handle, instructionList);
 
         // Instructions that use the previous loaded value.
-        if (instruction instanceof ConversionInstruction) handleConversion(instructionList, handle);
-        if (instruction instanceof StoreInstruction) handleStore(handle);
-
+        if (instruction instanceof ConversionInstruction) handleConversion(handle, instructionList);
         if (instruction instanceof GotoInstruction) handleGoTo(handle, instructionList);
+
+        if (instruction instanceof StoreInstruction) handleStore(handle);
 
         // Load Instructions [Load Constant (SimpleFolding) / Load Variable (ConstantVariableFolding)]
         if (isLoadConstantValueInstruction(instruction)) handleLoad(handle);
-        else if (instruction instanceof LoadInstruction) handleVariableLoad(instructionList, handle);
+        else if (instruction instanceof LoadInstruction) handleVariableLoad(handle);
         else blockOperationIfInLoop = false; // if it is not a load instruction then switch off block after handling.
 
         displayLog("");
-
     }
 
     //                     <==================== Handling Instructions ====================>
 
     // Method that converts the value on the top of the stack to another type.
-    private void handleConversion(InstructionList instructionList, InstructionHandle handle) {
+    private void handleConversion(InstructionHandle handle, InstructionList instructionList) {
         if (isLoadConstantValueInstruction(loadInstructions.peek().getInstruction()) || !blockOperationIfInLoop) {
             // if its a constant or if the variable does not change in the loop.
             valuesStack.push(convertValue(handle.getInstruction(), valuesStack.pop()));
             displayLog("[CONVERSION] Converted Top Of Stack Value To: " + valuesStack.peek());
 
             removeHandle(instructionList, loadInstructions.pop()); // remove load instruction
-            handle.setInstruction(createLoadInstruction(valuesStack.peek())); // change conversion instruction with load.
+            handle.setInstruction(createLoadInstruction(valuesStack.peek(), cpgen)); // change conversion instruction with load.
             loadInstructions.push(handle); // push new load instruction onto the loadInstruction stack.
         }
     }
@@ -217,7 +216,7 @@ public class ConstantFolder {
         else if (first < second) result = -1;
 
         removePreviousTwoLoadInstructions(instructionList);
-        handle.setInstruction(createLoadInstruction(result));
+        handle.setInstruction(createLoadInstruction(result, cpgen));
         loadInstructions.push(handle);
         valuesStack.push(result);
     }
@@ -226,14 +225,8 @@ public class ConstantFolder {
         if (blockOperationIfInLoop) return;
 
         IfInstruction comparisonInstruction = (IfInstruction) handle.getInstruction();
-        boolean outcome = parseComparisonInstruction(comparisonInstruction);
-        displayLog("[COMPARISON] Comparison Outcome: " + outcome);
 
-        // if its comparing with 0, then only one value is loaded onto the stack (which needs to get removed).
-        if (isInstructionComparingWithZero(comparisonInstruction)) removeHandle(instructionList, loadInstructions.pop());
-        else removePreviousTwoLoadInstructions(instructionList); // else remove the two values that are being compared.
-
-        if (outcome) {
+        if (getComparisonOutcome(instructionList, comparisonInstruction)) {
             removeHandle(instructionList, handle);
             deleteElseBranch = true;
         } else {
@@ -251,25 +244,29 @@ public class ConstantFolder {
         variables.put(key, value);
     }
 
-    private void handleVariableLoad(InstructionList instructionList, InstructionHandle handle) {
+    private void handleVariableLoad(InstructionHandle handle) {
         int variableKey = ((LoadInstruction) handle.getInstruction()).getIndex();
         valuesStack.push(variables.get(variableKey));
         loadInstructions.push(handle);
         displayLog("[LOAD_VARIABLE] Loaded Variable Value: " + valuesStack.peek());
         // if not already blocking: block if this variable load is in a loop & the variable stores a value in the loop.
-        blockOperationIfInLoop = blockOperationIfInLoop || variableChangesInLoop(instructionList, handle, variableKey);
+        blockOperationIfInLoop = blockOperationIfInLoop || variableChangesInLoop(handle, variableKey);
         displayLog("[BLOCK] Status: " + blockOperationIfInLoop);
     }
 
     private void handleLoad(InstructionHandle handle) {
-        valuesStack.push(getLoadConstantValue(handle.getInstruction()));
+        valuesStack.push(getLoadConstantValue(handle.getInstruction(), cpgen));
         loadInstructions.push(handle);
         displayLog("[LOAD_CONSTANT] Loaded Constant Value: " + valuesStack.peek());
     }
 
     private void handleArithmetic(InstructionHandle handle, InstructionList instructionList) {
         if (blockOperationIfInLoop) return; // if block operation is true, then skip this instruction.
-        valuesStack.push(performArithmeticOperation(handle.getInstruction()));
+
+        Number second = valuesStack.pop(); // last load is on the top of the stack.
+        Number first = valuesStack.pop();
+        valuesStack.push(performArithmeticOperation(first, second, handle.getInstruction()));
+
         displayLog("[ARITHMETIC_OPERATION] Calculated Value: " + valuesStack.peek() + " Pushed Onto Stack.");
         condenseOperationInstructions(instructionList, handle, valuesStack.peek()); // using peek because it needs to be in stack.
     }
@@ -340,21 +337,22 @@ public class ConstantFolder {
     }
 
 
-    // <============================================= Helper Methods ==================================================>
+    // <=========================================== Auxiliary Methods ================================================>
 
-    // checks if the Instruction Loads a constant value.
-    private static boolean isLoadConstantValueInstruction(Instruction instruction){
-        return (instruction instanceof LDC || instruction instanceof LDC2_W ||
-                instruction instanceof SIPUSH || instruction instanceof BIPUSH ||
-                instruction instanceof ICONST || instruction instanceof FCONST ||
-                instruction instanceof DCONST || instruction instanceof LCONST);
+    private boolean getComparisonOutcome(InstructionList instructionList, IfInstruction instruction){
+        if (isInstructionComparingWithZero(instruction)) {
+            // if its comparing with 0, then only one value is loaded onto the stack (which needs to get removed).
+            removeHandle(instructionList, loadInstructions.pop());
+            return parseComparisonInstruction(valuesStack.pop(), instruction);
+        }
+        // usually should be the other way around, but the compiler inverses the instruction (i.e. > becomes <=)
+        Number first = valuesStack.pop();
+        Number second = valuesStack.pop();
+        removePreviousTwoLoadInstructions(instructionList); // else remove the two values that are being compared.
+        return parseComparisonInstruction(first, second, instruction);
     }
 
-    // checks if this instruction is an instruction that gets compared with zero.
-    private static boolean isInstructionComparingWithZero(Instruction instruction){
-        return instruction instanceof  IFLE || instruction instanceof IFLT || instruction instanceof IFGE ||
-                instruction instanceof IFGT || instruction instanceof IFEQ || instruction instanceof IFNE;
-    }
+    // <=========================================== Auxiliary Methods =================================================>
 
     /** used when performing an operation such as arithmetic or comparison, to basically reduce 3 instructions to 1.
      * 3 instructions being: LOAD X, LOAD Y, OPERATION. into just: LOAD Z, where Z is the result.
@@ -375,7 +373,7 @@ public class ConstantFolder {
      * @param value a value that the LoadInstruction will contain (i.e. LOAD value)
      */
     private void switchInstructionToLoadNumber(InstructionHandle handle, Number value){
-        handle.setInstruction(createLoadInstruction(value));
+        handle.setInstruction(createLoadInstruction(value, cpgen));
         loadInstructions.push(handle);
         displayLog("[SWITCHED_INSTRUCTION] Switched Instruction Into Load: " + value + " | " + handle.getInstruction());
     }
@@ -399,7 +397,7 @@ public class ConstantFolder {
                 }
             }
         }
-        displayLog("*[LOAD_LOOP_BOUNDS] Loaded Loop Bounds: " + loopBounds.toString());
+        displayLog("[LOAD_LOOP_BOUNDS] Loaded Loop Bounds. Number of Loops: " + loopBounds.size()/2);
     }
 
     /** Method that locates the loop that a given instruction belongs to.
@@ -411,27 +409,11 @@ public class ConstantFolder {
         int instructionPosition = handle.getPosition();
         for (int loopStartBounds = 0; loopStartBounds < loopBounds.size(); loopStartBounds += 2){
             InstructionHandle loopStartInstruction = loopBounds.get(loopStartBounds);
+            InstructionHandle loopEndInstruction = loopBounds.get(loopStartBounds+1);
 
-            if (instructionPosition >= loopStartInstruction.getPosition() && instructionPosition < loopStartInstruction.getNext().getPosition()){
-                displayLog("[LOOP_LOCATED] Loop Located @ " + loopStartInstruction.getInstruction());
+            if (instructionPosition >= loopStartInstruction.getPosition() && instructionPosition < loopEndInstruction.getPosition()){
+                displayLog("[LOOP_LOCATED] Loop Located @ " + loopStartInstruction.getInstruction() + " ~ " + loopEndInstruction.getInstruction());
                 return loopStartInstruction;
-            }
-        }
-        return null;
-    }
-
-    /** Due to the fact that the InstructionHandle may lose it's proper position in the InstructionList, this method
-     * is necessary in order to get back the correct InstructionHandler (with its getNext() working).
-     *
-     * @param instructionList the list of instruction that are in the method.
-     * @param handle Instruction Wrapper that holds the instruction.
-     * @return the true InstructionHandle
-     */
-    private InstructionHandle locateTrueInstructionHandle(InstructionList instructionList, InstructionHandle handle){
-        if (handle == null) return null;
-        for (InstructionHandle instructionHandle: instructionList.getInstructionHandles()){
-            if (instructionHandle.getInstruction().equals(handle.getInstruction())){
-                return handle;
             }
         }
         return null;
@@ -439,13 +421,12 @@ public class ConstantFolder {
 
     /** Method that detects whether the given variable changes during the loop.
      *
-     * @param instructionList the list of instruction that are in the method.
      * @param handle Instruction Wrapper that holds the instruction.
      * @param key the key of the variable.
      * @return true/false to indicate whether the variable changes value during the loop.
      */
-    private boolean variableChangesInLoop(InstructionList instructionList, InstructionHandle handle, int key){
-        InstructionHandle handleInLoop = locateTrueInstructionHandle(instructionList, locateLoopForInstruction(handle));
+    private boolean variableChangesInLoop(InstructionHandle handle, int key){
+        InstructionHandle handleInLoop = locateLoopForInstruction(handle);
 
         while (handleInLoop != null && !(handleInLoop.getInstruction() instanceof GotoInstruction)){
             Instruction instruction = handleInLoop.getInstruction();
@@ -485,6 +466,22 @@ public class ConstantFolder {
         } catch (TargetLostException ignored){ }
     }
 
+    // <============================================= Helper Methods ==================================================>
+
+    // checks if the Instruction Loads a constant value.
+    private static boolean isLoadConstantValueInstruction(Instruction instruction){
+        return (instruction instanceof LDC || instruction instanceof LDC2_W ||
+                instruction instanceof SIPUSH || instruction instanceof BIPUSH ||
+                instruction instanceof ICONST || instruction instanceof FCONST ||
+                instruction instanceof DCONST || instruction instanceof LCONST);
+    }
+
+    // checks if this instruction is an instruction that gets compared with zero.
+    private static boolean isInstructionComparingWithZero(Instruction instruction){
+        return instruction instanceof  IFLE || instruction instanceof IFLT || instruction instanceof IFGE ||
+                instruction instanceof IFGT || instruction instanceof IFEQ || instruction instanceof IFNE;
+    }
+
     /** Converts Number value into another type. First letter is the starting type, second letter is the target type
      * i.e. I2D means Integer to Double.
      *
@@ -505,33 +502,31 @@ public class ConstantFolder {
         throw new IllegalStateException("Instruction not recognised");
     }
 
-    /** takes in a Comparison Instruction, and creates the boolean value using the values in the stack.
-     *
-     * @param instruction a Comparison Instruction, which is used to figure out which comparison to do.
-     * @return the result of the Comparison Instruction.
-     */
-	private boolean parseComparisonInstruction(Instruction instruction){
-    	// comparisons with the integer value 0.
-    	if (instruction instanceof IFLE) return (Integer) valuesStack.pop() <= 0;
-		else if (instruction instanceof IFLT) return (Integer) valuesStack.pop() < 0;
-		else if (instruction instanceof IFGE) return (Integer) valuesStack.pop() >= 0;
-		else if (instruction instanceof IFGT) return (Integer) valuesStack.pop() > 0;
-		else if (instruction instanceof IFEQ) return (Integer) valuesStack.pop() == 0;
-		else if (instruction instanceof IFNE) return (Integer) valuesStack.pop() != 0;
-
-		// comparisons with two values.
-		int first = (Integer) valuesStack.pop();
-		int second = (Integer) valuesStack.pop();
-
-		if (instruction instanceof IF_ICMPLE) return first <= second;
-		else if (instruction instanceof IF_ICMPLT) return first < second;
-		else if (instruction instanceof IF_ICMPGE) return first >= second;
-		else if (instruction instanceof IF_ICMPGT) return first > second;
-		else if (instruction instanceof IF_ICMPEQ) return first == second;
-		else if (instruction instanceof IF_ICMPNE) return first != second;
+    // takes in a value and a instruction that compares with 0, and returns the result
+	private static boolean parseComparisonInstruction(Number first, Instruction instruction){
+        System.out.println("COMPARING WITH 0: " + first);
+    	if (instruction instanceof IFLE) return first.intValue() <= 0;
+		else if (instruction instanceof IFLT) return first.intValue() < 0;
+		else if (instruction instanceof IFGE) return first.intValue() >= 0;
+		else if (instruction instanceof IFGT) return first.intValue() > 0;
+		else if (instruction instanceof IFEQ) return first.intValue() == 0;
+		else if (instruction instanceof IFNE) return first.intValue() != 0;
 
 		throw new IllegalStateException(String.valueOf(instruction)); // if it is None of these objects then error.
 	}
+
+    // takes in 2 values and a instruction that compares with 0, and returns the result
+    private static boolean parseComparisonInstruction(Number first, Number second, Instruction instruction){
+        System.out.println("COMPARING: " + first + " w/ " + second);
+        if (instruction instanceof IF_ICMPLE) return first.intValue() <= second.intValue();
+        else if (instruction instanceof IF_ICMPLT) return first.intValue() < second.intValue();
+        else if (instruction instanceof IF_ICMPGE) return first.intValue() >= second.intValue();
+        else if (instruction instanceof IF_ICMPGT) return first.intValue() > second.intValue();
+        else if (instruction instanceof IF_ICMPEQ) return first.intValue() == second.intValue();
+        else if (instruction instanceof IF_ICMPNE) return first.intValue() != second.intValue();
+
+        throw new IllegalStateException(String.valueOf(instruction)); // if it is None of these objects then error.
+    }
 
     /** This method creates a load instruction using the value that was given to it.
      * LDC2_W is for Doubles/Longs | LDC is for Floats/Integers.
@@ -539,7 +534,7 @@ public class ConstantFolder {
      * @param value a Number object that represents a value.
      * @return an Load Instruction that loads the given number value.
      */
-	private Instruction createLoadInstruction(Number value){
+	private static Instruction createLoadInstruction(Number value, ConstantPoolGen cpgen){
 		if (value instanceof Double){
 			return new LDC2_W(cpgen.addDouble((Double) value)); // pushes double
 		} else if (value instanceof Integer){
@@ -559,7 +554,7 @@ public class ConstantFolder {
 	 * @param nextInstruction the LoadInstruction that holds the value to be loaded.
 	 * @return a Number object that represents the value.
 	 */
-	private Number getLoadConstantValue(Instruction nextInstruction) {
+	private static Number getLoadConstantValue(Instruction nextInstruction, ConstantPoolGen cpgen) {
 		if (nextInstruction instanceof LDC) {
 		    // LDC loads a integer/float onto the stack.
 			return (Number) ((LDC) nextInstruction).getValue(cpgen);
@@ -592,11 +587,8 @@ public class ConstantFolder {
 	 *
 	 * @param nextInstruction the instruction that indicates the type of arithmetic operation.
 	 */
-	private Number performArithmeticOperation(Instruction nextInstruction) {
-		Number second = valuesStack.pop();
-		Number first = valuesStack.pop();
-
-		Number combinedValue = null;
+	private static Number performArithmeticOperation(Number first, Number second, Instruction nextInstruction) {
+		Number combinedValue ;
 
 		// I represents Integer / D represents Double / F represents Float / L represents Long.
         // 4 possible operations (ADD / SUB / MUL / DIV).
@@ -644,8 +636,8 @@ public class ConstantFolder {
 		} else if (nextInstruction instanceof LDIV){
 			combinedValue = first.longValue() / second.longValue();
 		}
-		// if null then arithmetic operation NOT RECOGNISED.
-        if (combinedValue == null) throw new IllegalStateException("Unrecognised Arithmetic Operation");
+
+		else throw new IllegalStateException("Unrecognised Arithmetic Operation");
         return combinedValue;
 
 	}
