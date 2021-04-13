@@ -172,7 +172,7 @@ public class ConstantFolder {
         // Load Instructions [Load Constant (SimpleFolding) / Load Variable (ConstantVariableFolding)]
         if (isLoadConstantValueInstruction(instruction)) handleLoad(handle);
         else if (instruction instanceof LoadInstruction) handleVariableLoad(handle);
-	else if (instruction instanceof ConversionInstruction) handleConversion(handle, instructionList);
+        else if (instruction instanceof ConversionInstruction) handleConversion(handle, instructionList);
         else blockOperationIfInLoop = false; // if it is not a load instruction then switch off block after handling.
 
         displayLog("");
@@ -351,6 +351,7 @@ public class ConstantFolder {
         return parseComparisonInstruction(first, second, instruction);
     }
 
+
     /** used when performing an operation such as arithmetic or comparison, to basically reduce 3 instructions to 1.
      * 3 instructions being: LOAD X, LOAD Y, OPERATION. into just: LOAD Z, where Z is the result.
      *
@@ -428,9 +429,9 @@ public class ConstantFolder {
         while (handleInLoop != null && !(handleInLoop.getInstruction() instanceof GotoInstruction)){
             Instruction instruction = handleInLoop.getInstruction();
             if (instruction instanceof StoreInstruction) {
-                if (((StoreInstruction) instruction).getIndex() == key) return true;
+                if (((StoreInstruction) instruction).getIndex() == key) return true; // && ((StoreInstruction) instruction).getIndex() == key)
             } else if (instruction instanceof IINC){
-                if (((IINC) instruction).getIndex() == key) return true;
+                if (((IINC) instruction).getIndex() == key) return true; // && ((StoreInstruction) instruction).getIndex() == key)
             }
             handleInLoop = handleInLoop.getNext();
         }
