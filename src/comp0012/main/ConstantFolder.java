@@ -165,8 +165,6 @@ public class ConstantFolder {
         if (instruction instanceof LCMP) handleLongComparison(handle, instructionList);
         else if (instruction instanceof IfInstruction) handleComparison(handle, instructionList);
 
-        // Instructions that use the previous loaded value.
-        if (instruction instanceof ConversionInstruction) handleConversion(handle, instructionList);
         if (instruction instanceof GotoInstruction) handleGoTo(handle, instructionList);
 
         if (instruction instanceof StoreInstruction) handleStore(handle);
@@ -174,6 +172,7 @@ public class ConstantFolder {
         // Load Instructions [Load Constant (SimpleFolding) / Load Variable (ConstantVariableFolding)]
         if (isLoadConstantValueInstruction(instruction)) handleLoad(handle);
         else if (instruction instanceof LoadInstruction) handleVariableLoad(handle);
+	else if (instruction instanceof ConversionInstruction) handleConversion(handle, instructionList);
         else blockOperationIfInLoop = false; // if it is not a load instruction then switch off block after handling.
 
         displayLog("");
