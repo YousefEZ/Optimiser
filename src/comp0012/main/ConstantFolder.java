@@ -493,11 +493,11 @@ public class ConstantFolder {
         if (instruction instanceof I2D || instruction instanceof L2D || instruction instanceof F2D){
             return value.doubleValue();
         } else if (instruction instanceof I2F || instruction instanceof L2F || instruction instanceof D2F){
-            return value.doubleValue();
+            return value.floatValue();
         } else if (instruction instanceof I2L || instruction instanceof D2L || instruction instanceof F2L){
-            return value.doubleValue();
+            return value.longValue();
         } else if (instruction instanceof D2I || instruction instanceof F2I || instruction instanceof L2I){
-            return value.doubleValue();
+            return value.integerValue();
         }
         throw new IllegalStateException("Instruction not recognised");
     }
