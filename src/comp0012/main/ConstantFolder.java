@@ -497,7 +497,7 @@ public class ConstantFolder {
         } else if (instruction instanceof I2L || instruction instanceof D2L || instruction instanceof F2L){
             return value.longValue();
         } else if (instruction instanceof D2I || instruction instanceof F2I || instruction instanceof L2I){
-            return value.integerValue();
+            return value.intValue();
         }
         throw new IllegalStateException("Instruction not recognised");
     }
