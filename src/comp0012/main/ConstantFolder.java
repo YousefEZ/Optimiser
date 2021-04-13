@@ -431,9 +431,9 @@ public class ConstantFolder {
         while (handleInLoop != null && !(handleInLoop.getInstruction() instanceof GotoInstruction)){
             Instruction instruction = handleInLoop.getInstruction();
             if (instruction instanceof StoreInstruction) {
-                if (((StoreInstruction) instruction).getIndex() == key) return true; // && ((StoreInstruction) instruction).getIndex() == key)
+                if (((StoreInstruction) instruction).getIndex() == key) return true;
             } else if (instruction instanceof IINC){
-                if (((IINC) instruction).getIndex() == key) return true; // && ((StoreInstruction) instruction).getIndex() == key)
+                if (((IINC) instruction).getIndex() == key) return true;
             }
             handleInLoop = handleInLoop.getNext();
         }
