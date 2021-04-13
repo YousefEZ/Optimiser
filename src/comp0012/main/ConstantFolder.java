@@ -352,8 +352,6 @@ public class ConstantFolder {
         return parseComparisonInstruction(first, second, instruction);
     }
 
-    // <=========================================== Auxiliary Methods =================================================>
-
     /** used when performing an operation such as arithmetic or comparison, to basically reduce 3 instructions to 1.
      * 3 instructions being: LOAD X, LOAD Y, OPERATION. into just: LOAD Z, where Z is the result.
      *
